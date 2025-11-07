@@ -936,7 +936,7 @@ function App() {
             )}
           </main>
         </div>
-      </main-content-portfolio>
+     </main> 
     </div>
   );
 }
