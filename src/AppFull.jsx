@@ -60,63 +60,81 @@ const fetchMoexStockPrice = async (ticker) => {
 
 const fetchMoexBondPrice = async (isin) => {
   try {
-    // Для облигаций цена на MOEX в % от номинала (обычно номинал = 1000₽)
-    // Нужно получить: цену (в %) + НКД + умножить на 10
+    // Для облигаций нужно получить:
+    // 1. Цену в % от номинала
+    // 2. АКТУАЛЬНЫЙ номинал (с учетом амортизации!)
+    // 3. НКД (накопленный купонный доход)
     
     // Пробуем основной режим торгов TQCB
     let response = await fetchWithTimeout(
-      `https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQCB/securities/${isin}.json?iss.meta=off&iss.only=marketdata`,
+      `https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQCB/securities/${isin}.json?iss.meta=off`,
       5000
     );
     let data = await response.json();
     
-    // Если не нашли в TQCB, пробуем TQOB (основной режим)
-    if (!data?.marketdata?.data?.[0]) {
+    // Если не нашли в TQCB, пробуем TQOB (ОФЗ)
+    if (!data?.marketdata?.data?.[0] && !data?.securities?.data?.[0]) {
       response = await fetchWithTimeout(
-        `https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQOB/securities/${isin}.json?iss.meta=off&iss.only=marketdata`,
+        `https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQOB/securities/${isin}.json?iss.meta=off`,
         5000
       );
       data = await response.json();
     }
     
-    // Если не нашли в TQOB, пробуем TQOD (облигации внешнего долга)
-    if (!data?.marketdata?.data?.[0]) {
+    // Если не нашли в TQOB, пробуем TQOD (внешний долг)
+    if (!data?.marketdata?.data?.[0] && !data?.securities?.data?.[0]) {
       response = await fetchWithTimeout(
-        `https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQOD/securities/${isin}.json?iss.meta=off&iss.only=marketdata`,
+        `https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQOD/securities/${isin}.json?iss.meta=off`,
         5000
       );
       data = await response.json();
     }
     
-    if (!data?.marketdata?.data?.[0]) {
+    if (!data?.marketdata?.data?.[0] || !data?.securities?.data?.[0]) {
       console.error(`Облигация ${isin} не найдена ни в одном режиме`);
       return 0;
     }
     
-    // Ищем индексы нужных полей
-    const columns = data.marketdata.columns;
-    const row = data.marketdata.data[0];
+    // === MARKETDATA (цены) ===
+    const marketColumns = data.marketdata.columns;
+    const marketRow = data.marketdata.data[0];
     
-    const lastIndex = columns.indexOf('LAST');
-    const wapriceIndex = columns.indexOf('WAPRICE');
-    const accintIndex = columns.indexOf('ACCINT'); // НКД
+    const lastIndex = marketColumns.indexOf('LAST');
+    const wapriceIndex = marketColumns.indexOf('WAPRICE');
+    const accintIndex = marketColumns.indexOf('ACCINT'); // НКД в рублях
     
-    // Берем цену (в % от номинала)
-    let pricePercent = row[wapriceIndex] || row[lastIndex] || 0;
+    // Цена в % от номинала
+    let pricePercent = marketRow[wapriceIndex] || marketRow[lastIndex] || 0;
     
     if (pricePercent === 0 || pricePercent === null) {
       console.error(`Цена облигации ${isin} = 0`);
       return 0;
     }
     
-    // Получаем НКД (накопленный купонный доход)
-    const accint = row[accintIndex] || 0;
+    // НКД (накопленный купонный доход в рублях)
+    const accint = marketRow[accintIndex] || 0;
     
-    // Цена облигации = (цена в % × 10) + НКД
-    // Например: 99.44% × 10 + 5.5 = 994.4 + 5.5 = 999.9 руб
-    const totalPrice = (pricePercent * 10) + accint;
+    // === SECURITIES (параметры облигации) ===
+    const secColumns = data.securities.columns;
+    const secRow = data.securities.data[0];
     
-    console.log(`💰 ${isin}: ${pricePercent}% × 10 + ${accint} НКД = ${totalPrice.toFixed(2)} руб`);
+    const facevalueIndex = secColumns.indexOf('FACEVALUE'); // Номинал
+    const initialFacevalueIndex = secColumns.indexOf('INITIALFACEVALUE'); // Начальный номинал
+    
+    // Получаем актуальный номинал (с учетом амортизации!)
+    let faceValue = secRow[facevalueIndex] || secRow[initialFacevalueIndex] || 1000;
+    
+    // Если номинал не получен или 0, используем стандартный 1000
+    if (!faceValue || faceValue === 0) {
+      faceValue = 1000;
+    }
+    
+    // Цена облигации = (цена в % / 100 × номинал) + НКД
+    // Например: 99.3% от 500₽ + 5.5 НКД = (0.993 × 500) + 5.5 = 496.5 + 5.5 = 502₽
+    const cleanPrice = (pricePercent / 100) * faceValue;
+    const totalPrice = cleanPrice + accint;
+    
+    console.log(`💰 ${isin}: ${pricePercent}% от ${faceValue}₽ + ${accint.toFixed(2)} НКД = ${totalPrice.toFixed(2)} руб`);
     
     return totalPrice;
   } catch (error) {
@@ -1275,3 +1293,4 @@ function App() {
 }
 
 export default App;
+
