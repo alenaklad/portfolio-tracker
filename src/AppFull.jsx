@@ -25,14 +25,35 @@ const CATEGORIES = [
   'Криптовалюты'
 ];
 
+// Функция для fetch с таймаутом
+const fetchWithTimeout = async (url, timeout = 5000) => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+  
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeoutId);
+    return response;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      throw new Error('Таймаут запроса');
+    }
+    throw error;
+  }
+};
+
 const fetchMoexStockPrice = async (ticker) => {
   try {
-    const response = await fetch(`https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities/${ticker}.json?iss.meta=off&iss.only=marketdata&marketdata.columns=LAST`);
+    const response = await fetchWithTimeout(
+      `https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities/${ticker}.json?iss.meta=off&iss.only=marketdata&marketdata.columns=LAST`,
+      5000
+    );
     const data = await response.json();
     const price = data?.marketdata?.data?.[0]?.[0];
     return price || 0;
   } catch (error) {
-    console.error(`Ошибка получения цены акции ${ticker}:`, error);
+    console.error(`Ошибка получения цены акции ${ticker}:`, error.message);
     return 0;
   }
 };
@@ -40,20 +61,26 @@ const fetchMoexStockPrice = async (ticker) => {
 const fetchMoexBondPrice = async (isin) => {
   try {
     // Получаем цену с НКД (WAPRICE - средневзвешенная цена с НКД)
-    const response = await fetch(`https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQCB/securities/${isin}.json?iss.meta=off&iss.only=marketdata&marketdata.columns=WAPRICE`);
+    const response = await fetchWithTimeout(
+      `https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQCB/securities/${isin}.json?iss.meta=off&iss.only=marketdata&marketdata.columns=WAPRICE`,
+      5000
+    );
     const data = await response.json();
     let price = data?.marketdata?.data?.[0]?.[0];
     
     // Если нет WAPRICE, пробуем LAST
     if (!price || price === 0) {
-      const response2 = await fetch(`https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQCB/securities/${isin}.json?iss.meta=off&iss.only=marketdata&marketdata.columns=LAST`);
+      const response2 = await fetchWithTimeout(
+        `https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQCB/securities/${isin}.json?iss.meta=off&iss.only=marketdata&marketdata.columns=LAST`,
+        5000
+      );
       const data2 = await response2.json();
       price = data2?.marketdata?.data?.[0]?.[0];
     }
     
     return price || 0;
   } catch (error) {
-    console.error(`Ошибка получения цены облигации ${isin}:`, error);
+    console.error(`Ошибка получения цены облигации ${isin}:`, error.message);
     return 0;
   }
 };
@@ -61,20 +88,26 @@ const fetchMoexBondPrice = async (isin) => {
 const fetchMoexFundPrice = async (ticker) => {
   try {
     // Для БПИФов и ПИФов
-    const response = await fetch(`https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQTF/securities/${ticker}.json?iss.meta=off&iss.only=marketdata&marketdata.columns=LAST`);
+    const response = await fetchWithTimeout(
+      `https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQTF/securities/${ticker}.json?iss.meta=off&iss.only=marketdata&marketdata.columns=LAST`,
+      5000
+    );
     const data = await response.json();
     let price = data?.marketdata?.data?.[0]?.[0];
     
     // Если не нашли в TQTF, пробуем TQTD (облигационные ETF)
     if (!price || price === 0) {
-      const response2 = await fetch(`https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQTD/securities/${ticker}.json?iss.meta=off&iss.only=marketdata&marketdata.columns=LAST`);
+      const response2 = await fetchWithTimeout(
+        `https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQTD/securities/${ticker}.json?iss.meta=off&iss.only=marketdata&marketdata.columns=LAST`,
+        5000
+      );
       const data2 = await response2.json();
       price = data2?.marketdata?.data?.[0]?.[0];
     }
     
     return price || 0;
   } catch (error) {
-    console.error(`Ошибка получения цены фонда ${ticker}:`, error);
+    console.error(`Ошибка получения цены фонда ${ticker}:`, error.message);
     return 0;
   }
 };
@@ -83,7 +116,10 @@ const fetchBybitCryptoPrice = async (symbol) => {
   try {
     // Bybit API для получения текущей цены
     const normalizedSymbol = symbol.toUpperCase();
-    const response = await fetch(`https://api.bybit.com/v5/market/tickers?category=spot&symbol=${normalizedSymbol}USDT`);
+    const response = await fetchWithTimeout(
+      `https://api.bybit.com/v5/market/tickers?category=spot&symbol=${normalizedSymbol}USDT`,
+      5000
+    );
     const data = await response.json();
     
     if (data.retCode === 0 && data.result?.list?.[0]) {
@@ -94,7 +130,7 @@ const fetchBybitCryptoPrice = async (symbol) => {
     }
     return 0;
   } catch (error) {
-    console.error(`Ошибка получения цены криптовалюты ${symbol}:`, error);
+    console.error(`Ошибка получения цены криптовалюты ${symbol}:`, error.message);
     return 0;
   }
 };
@@ -448,24 +484,62 @@ function App() {
   };
 
   const updateAllPrices = async () => {
+    if (isUpdating) return; // Предотвращаем множественные запуски
+    
     setIsUpdating(true);
-    const updatedAssets = [...(activePortfolio?.assets || [])];
+    console.log('🔄 Начинаю обновление цен...');
     
-    for (let i = 0; i < updatedAssets.length; i++) {
-      if (updatedAssets[i].ticker) {
-        const newPrice = await fetchPrice(
-          updatedAssets[i].ticker, 
-          updatedAssets[i].currency,
-          updatedAssets[i].category
-        );
-        updatedAssets[i].price = newPrice;
+    try {
+      const assets = [...(activePortfolio?.assets || [])];
+      
+      if (assets.length === 0) {
+        console.log('⚠️ Нет активов для обновления');
+        setIsUpdating(false);
+        return;
       }
+      
+      // Параллельное обновление всех цен сразу!
+      const pricePromises = assets.map(async (asset, index) => {
+        if (!asset.ticker) {
+          console.log(`⏭️ Пропускаю актив ${index + 1}: нет тикера`);
+          return asset;
+        }
+        
+        try {
+          console.log(`📥 Загружаю цену для ${asset.ticker} (${asset.category})`);
+          const newPrice = await fetchPrice(
+            asset.ticker, 
+            asset.currency,
+            asset.category
+          );
+          
+          if (newPrice > 0) {
+            console.log(`✅ ${asset.ticker}: ${newPrice.toFixed(2)}`);
+            return { ...asset, price: newPrice };
+          } else {
+            console.log(`⚠️ ${asset.ticker}: цена не получена`);
+            return asset;
+          }
+        } catch (error) {
+          console.error(`❌ Ошибка загрузки ${asset.ticker}:`, error);
+          return asset;
+        }
+      });
+      
+      // Ждем все запросы одновременно
+      const updatedAssets = await Promise.all(pricePromises);
+      
+      updatePortfolio('assets', updatedAssets);
+      const now = new Date();
+      setLastUpdate(now);
+      
+      console.log('✅ Все цены обновлены!');
+    } catch (error) {
+      console.error('❌ Ошибка обновления цен:', error);
+      alert('Ошибка обновления цен. Проверьте консоль.');
+    } finally {
+      setIsUpdating(false);
     }
-    
-    updatePortfolio('assets', updatedAssets);
-    const now = new Date();
-    setLastUpdate(now);
-    setIsUpdating(false);
   };
 
   const calculateAssetValues = (asset) => {
@@ -695,7 +769,7 @@ function App() {
                   disabled={isUpdating}
                 >
                   <RefreshCw size={18} className={isUpdating ? 'spinning' : ''} />
-                  Обновить цены
+                  {isUpdating ? 'Обновление...' : 'Обновить цены'}
                 </button>
               </div>
             </div>
