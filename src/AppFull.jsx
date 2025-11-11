@@ -60,25 +60,65 @@ const fetchMoexStockPrice = async (ticker) => {
 
 const fetchMoexBondPrice = async (isin) => {
   try {
-    // Получаем цену с НКД (WAPRICE - средневзвешенная цена с НКД)
-    const response = await fetchWithTimeout(
-      `https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQCB/securities/${isin}.json?iss.meta=off&iss.only=marketdata&marketdata.columns=WAPRICE`,
+    // Для облигаций цена на MOEX в % от номинала (обычно номинал = 1000₽)
+    // Нужно получить: цену (в %) + НКД + умножить на 10
+    
+    // Пробуем основной режим торгов TQCB
+    let response = await fetchWithTimeout(
+      `https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQCB/securities/${isin}.json?iss.meta=off&iss.only=marketdata`,
       5000
     );
-    const data = await response.json();
-    let price = data?.marketdata?.data?.[0]?.[0];
+    let data = await response.json();
     
-    // Если нет WAPRICE, пробуем LAST
-    if (!price || price === 0) {
-      const response2 = await fetchWithTimeout(
-        `https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQCB/securities/${isin}.json?iss.meta=off&iss.only=marketdata&marketdata.columns=LAST`,
+    // Если не нашли в TQCB, пробуем TQOB (основной режим)
+    if (!data?.marketdata?.data?.[0]) {
+      response = await fetchWithTimeout(
+        `https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQOB/securities/${isin}.json?iss.meta=off&iss.only=marketdata`,
         5000
       );
-      const data2 = await response2.json();
-      price = data2?.marketdata?.data?.[0]?.[0];
+      data = await response.json();
     }
     
-    return price || 0;
+    // Если не нашли в TQOB, пробуем TQOD (облигации внешнего долга)
+    if (!data?.marketdata?.data?.[0]) {
+      response = await fetchWithTimeout(
+        `https://iss.moex.com/iss/engines/stock/markets/bonds/boards/TQOD/securities/${isin}.json?iss.meta=off&iss.only=marketdata`,
+        5000
+      );
+      data = await response.json();
+    }
+    
+    if (!data?.marketdata?.data?.[0]) {
+      console.error(`Облигация ${isin} не найдена ни в одном режиме`);
+      return 0;
+    }
+    
+    // Ищем индексы нужных полей
+    const columns = data.marketdata.columns;
+    const row = data.marketdata.data[0];
+    
+    const lastIndex = columns.indexOf('LAST');
+    const wapriceIndex = columns.indexOf('WAPRICE');
+    const accintIndex = columns.indexOf('ACCINT'); // НКД
+    
+    // Берем цену (в % от номинала)
+    let pricePercent = row[wapriceIndex] || row[lastIndex] || 0;
+    
+    if (pricePercent === 0 || pricePercent === null) {
+      console.error(`Цена облигации ${isin} = 0`);
+      return 0;
+    }
+    
+    // Получаем НКД (накопленный купонный доход)
+    const accint = row[accintIndex] || 0;
+    
+    // Цена облигации = (цена в % × 10) + НКД
+    // Например: 99.44% × 10 + 5.5 = 994.4 + 5.5 = 999.9 руб
+    const totalPrice = (pricePercent * 10) + accint;
+    
+    console.log(`💰 ${isin}: ${pricePercent}% × 10 + ${accint} НКД = ${totalPrice.toFixed(2)} руб`);
+    
+    return totalPrice;
   } catch (error) {
     console.error(`Ошибка получения цены облигации ${isin}:`, error.message);
     return 0;
